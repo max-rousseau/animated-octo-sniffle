@@ -6,6 +6,7 @@ import os
 import pytest
 from unittest.mock import patch, MagicMock
 import openai_cli
+from openai_cli import AiConversation
 
 
 @pytest.fixture
@@ -16,9 +17,15 @@ def mock_env_api_key():
 
 
 @pytest.fixture
-def mock_requests_post():
-    """Fixture to mock requests.post."""
-    with patch("requests.post") as mock_post:
+def ai_conversation(mock_env_api_key):
+    """Fixture to create an AiConversation instance with mocked API key."""
+    return AiConversation()
+
+
+@pytest.fixture
+def mock_session_post():
+    """Fixture to mock session.post."""
+    with patch("requests.Session.post") as mock_post:
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "choices": [{"message": {"content": "Test response"}}]
@@ -27,41 +34,60 @@ def mock_requests_post():
         yield mock_post
 
 
-def test_load_api_key_from_env(mock_env_api_key):
+def test_load_api_key_from_env(ai_conversation):
     """Test loading API key from environment variables."""
-    api_key = openai_cli.load_api_key()
-    assert api_key == "test_api_key"
+    assert ai_conversation.api_key == "test_api_key"
 
 
-def test_create_message():
+def test_create_message(ai_conversation):
     """Test creating a message dictionary."""
-    message = openai_cli.create_message("user", "Hello")
+    message = ai_conversation._create_message("user", "Hello")
     assert message == {"role": "user", "content": "Hello"}
 
 
-def test_send_request_success(mock_env_api_key, mock_requests_post):
+def test_send_request_success(ai_conversation, mock_session_post):
     """Test successful API request."""
     messages = [{"role": "user", "content": "Hello"}]
-    response = openai_cli.send_request("test_api_key", messages)
+    response = ai_conversation._send_request(messages)
     
     # Verify the response
     assert response == "Test response"
     
     # Verify the request was made correctly
-    mock_requests_post.assert_called_once()
-    args, kwargs = mock_requests_post.call_args
-    assert args[0] == openai_cli.API_URL
-    assert kwargs["headers"]["Authorization"] == "Bearer test_api_key"
-    assert kwargs["json"]["model"] == openai_cli.MODEL
+    mock_session_post.assert_called_once()
+    args, kwargs = mock_session_post.call_args
+    assert args[0] == AiConversation.API_URL
+    assert kwargs["headers"]["Authorization"] == f"Bearer {ai_conversation.api_key}"
+    assert kwargs["json"]["model"] == AiConversation.MODEL
     assert kwargs["json"]["messages"] == messages
 
 
-@patch("requests.post")
-def test_send_request_error(mock_post):
+def test_process_command_exit(ai_conversation):
+    """Test processing exit command."""
+    result = ai_conversation._process_command("/exit")
+    assert result is False
+
+
+def test_process_command_clear(ai_conversation):
+    """Test processing clear command."""
+    # Add a message to conversation history
+    ai_conversation.messages.append({"role": "user", "content": "test"})
+    
+    # Process clear command
+    result = ai_conversation._process_command("/clear")
+    
+    # Verify result and that history was cleared except system message
+    assert result is True
+    assert len(ai_conversation.messages) == 1
+    assert ai_conversation.messages[0]["role"] == "system"
+
+
+def test_send_request_error(ai_conversation):
     """Test API request with error."""
-    mock_post.side_effect = requests.exceptions.RequestException("API Error")
-    
-    messages = [{"role": "user", "content": "Hello"}]
-    response = openai_cli.send_request("test_api_key", messages)
-    
-    assert response is None
+    with patch.object(ai_conversation.session, 'post') as mock_post:
+        mock_post.side_effect = requests.exceptions.RequestException("API Error")
+        
+        messages = [{"role": "user", "content": "Hello"}]
+        response = ai_conversation._send_request(messages)
+        
+        assert response is None
